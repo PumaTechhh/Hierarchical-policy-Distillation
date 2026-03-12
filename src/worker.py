@@ -38,6 +38,10 @@ class ReplayBuffer:
 
     def __len__(self):
         return len(self.buffer)
+        
+    def clear(self):
+        """Clears the buffer to prevent poisoning after a fundamental physics shift."""
+        self.buffer.clear()
 
 # --- The Worker Agent ---
 class DQNWorker:
@@ -65,6 +69,12 @@ class DQNWorker:
 
         self.optimizer = optim.Adam(self.policy_net.parameters(), lr=lr)
         self.memory = ReplayBuffer()
+
+        # THESIS ALIGNMENT: Track TD-error for rolling average
+        self.td_error_history = deque(maxlen=3) # 10-step rolling window
+
+        # DEDICATED DISTILLATION BUFFER
+        self.expert_memory = deque(maxlen=1000)
         
         # Loss functions
         self.mse_loss = nn.MSELoss()  # For standard RL
@@ -85,76 +95,103 @@ class DQNWorker:
     def calculate_td_error(self, state, action, reward, next_state, done):
         """
         THESIS REQUIREMENT: Brittleness Proxy.
-        Calculates the TD-Error for a SINGLE transition to detect 'surprise'.
-        Returns the absolute scalar error value.
+        Calculates the ROLLING AVERAGE of the TD-Error to detect 'surprise' 
+        without triggering on momentary mathematical noise.
         """
         state_t = torch.FloatTensor(state).to(self.device)
         next_state_t = torch.FloatTensor(next_state).to(self.device)
         reward_t = torch.tensor(reward, device=self.device)
         
         with torch.no_grad():
-            # Current Q-value estimate
             current_q = self.policy_net(state_t)[action]
-            
-            # Target Q-value (Bellman)
             max_next_q = self.target_net(next_state_t).max()
             target_q = reward_t + (1 - done) * self.gamma * max_next_q
             
-            # TD Error = |Target - Current|
             td_error = abs(target_q - current_q).item()
             
-        return td_error
+        # THESIS ALIGNMENT: Section 1.3.2.1 - Rolling Average
+        self.td_error_history.append(td_error)
+        rolling_avg = sum(self.td_error_history) / len(self.td_error_history)
+            
+        return rolling_avg
 
     def train_step(self):
         """
-        Standard DQN Training Step (Offline/Online RL).
+        THESIS ALIGNMENT: Interleaved Policy Distillation.
+        Blends standard Q-learning (MSE) with Expert Distillation (BC) 
+        to ensure robust recovery from any unnotified OOD state.
         """
         if len(self.memory) < self.batch_size:
             return None
 
+        # --- 1. Standard Q-Learning (Self-Exploration) ---
         state, action, reward, next_state, done = self.memory.sample(self.batch_size)
 
-        state = torch.FloatTensor(state).to(self.device)
-        action = torch.LongTensor(action).unsqueeze(1).to(self.device)
-        reward = torch.FloatTensor(reward).unsqueeze(1).to(self.device)
-        next_state = torch.FloatTensor(next_state).to(self.device)
-        done = torch.FloatTensor(done).unsqueeze(1).to(self.device)
+        state_t = torch.FloatTensor(state).to(self.device)
+        action_t = torch.LongTensor(action).unsqueeze(1).to(self.device)
+        reward_t = torch.FloatTensor(reward).unsqueeze(1).to(self.device)
+        next_state_t = torch.FloatTensor(next_state).to(self.device)
+        done_t = torch.FloatTensor(done).unsqueeze(1).to(self.device)
 
-        # Q(s, a)
-        q_values = self.policy_net(state).gather(1, action)
+        q_values = self.policy_net(state_t).gather(1, action_t)
 
-        # V(s') = max Q(s', a')
         with torch.no_grad():
-            next_q_values = self.target_net(next_state).max(1)[0].unsqueeze(1)
-            expected_q_values = reward + (self.gamma * next_q_values * (1 - done))
+            next_q_values = self.target_net(next_state_t).max(1)[0].unsqueeze(1)
+            expected_q_values = reward_t + (self.gamma * next_q_values * (1 - done_t))
 
-        loss = self.mse_loss(q_values, expected_q_values)
+        rl_loss = self.mse_loss(q_values, expected_q_values)
+        
+        # Initialize total loss as just the RL loss
+        total_loss = rl_loss
 
+        # --- 2. Interleaved Expert Distillation (Teacher Guidance) ---
+        if len(self.expert_memory) > 0:
+            exp_batch_size = min(16, len(self.expert_memory))
+            exp_batch = random.sample(self.expert_memory, exp_batch_size)
+            exp_states, exp_actions = zip(*exp_batch)
+            
+            exp_states_t = torch.FloatTensor(np.array(exp_states)).to(self.device)
+            exp_actions_t = torch.LongTensor(exp_actions).to(self.device)
+            
+            exp_q_values = self.policy_net(exp_states_t)
+            bc_loss = self.bc_loss(exp_q_values, exp_actions_t)
+            
+            # Gradient Blending: Combine RL exploration with LLM guidance
+            bc_weight = 1.0  # Hyperparameter controlling trust in the Supervisor
+            total_loss = rl_loss + (bc_weight * bc_loss)
+
+        # --- 3. Unified Network Update ---
         self.optimizer.zero_grad()
-        loss.backward()
+        total_loss.backward()
         self.optimizer.step()
         
-        # Epsilon Decay
+        # Standard Epsilon Decay
         self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
         
-        return loss.item()
+        return total_loss.item()
 
     def distill_policy(self, state, expert_action):
         """
         THESIS REQUIREMENT: Online Policy Distillation.
-        Performs a Behavioral Cloning update using the Supervisor's expert action.
+        Safely performs multi-step Behavioral Cloning using a dedicated 
+        expert buffer, preventing Q-learning pollution.
         """
+        # Save the expert label
+        self.expert_memory.append((state, expert_action))
+        
+        # Sample a batch of expert knowledge
+        batch_size = min(32, len(self.expert_memory))
+        batch = random.sample(self.expert_memory, batch_size)
+        states, actions = zip(*batch)
+        
+        states_t = torch.FloatTensor(np.array(states)).to(self.device)
+        actions_t = torch.LongTensor(actions).to(self.device)
+        
         self.optimizer.zero_grad()
         
-        state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
-        expert_action_tensor = torch.LongTensor([expert_action]).to(self.device)
-        
-        # Get raw logits (Q-values) from the network
-        q_values = self.policy_net(state_tensor)
-        
-        # We treat Q-values as logits for classification (which action is 'correct'?)
-        # CrossEntropyLoss expects (Batch, Class_Logits) and (Batch, Target_Class_Indices)
-        loss = self.bc_loss(q_values, expert_action_tensor)
+        # Get Q-values for the batch and apply BC loss
+        batch_q_values = self.policy_net(states_t)
+        loss = self.bc_loss(batch_q_values, actions_t)
         
         loss.backward()
         self.optimizer.step()
