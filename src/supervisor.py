@@ -88,7 +88,7 @@ class LocalLLaMASupervisor:
             # Fallback to keep the simulation running
             return 1 if state[2] > 0 else 0
 
-# --- Quick Test Code ---
+# Quick Test
 if __name__ == "__main__":
     supervisor = LocalLLaMASupervisor()
     

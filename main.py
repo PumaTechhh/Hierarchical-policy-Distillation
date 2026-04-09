@@ -1,34 +1,53 @@
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.ticker import MaxNLocator 
 from src.environment import SabotagedCartPole
 from src.worker import DQNWorker
 from src.supervisor import LocalLLaMASupervisor
 
-def plot_metrics(rewards, supervisor_calls, sabotage_episode, sabotage_type):
+
+def plot_metrics(rewards, supervisor_calls, sabotage_episode, eval_episode, sabotage_type):
     """Generates the evaluation graphs defined in the thesis."""
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8))
     
-    # Plot 1: Reward / Time-to-Recovery (TTR)
-    ax1.plot(rewards, label='Episode Reward', color='blue')
-    ax1.axvline(x=sabotage_episode, color='red', linestyle='--', label='Sabotage Triggered')
-    ax1.set_title(f'Worker Performance (TTR) - {sabotage_type}')
-    ax1.set_ylabel('Total Reward')
-    ax1.legend()
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 4.2))
+    
+    # Plot 1: Worker Performance (TTR)
+    ax1.plot(rewards, label='Episode Reward', color='blue', linewidth=1.5)
+    ax1.axvline(x=sabotage_episode, color='red', linestyle='--', label='Sabotage Triggered', linewidth=1.5)
+    ax1.axvline(x=eval_episode, color='green', linestyle=':', label='Evaluation Mode', linewidth=1.5)
+    
+    ax1.set_title('Worker Performance (TTR)', fontsize=14, fontweight='bold')
+    ax1.set_xlabel('Episode', fontsize=12)
+    ax1.set_ylabel('Total Reward', fontsize=12)
+    ax1.tick_params(axis='both', labelsize=11)
+    
+    ax1.grid(True, linestyle='--', alpha=0.6) # Adds the grid
+    ax1.xaxis.set_major_locator(MaxNLocator(integer=True, nbins=8)) # Cleans up X-axis ticks
+    ax1.legend(fontsize=11)
     
     # Plot 2: Supervisor Activation Decay
-    ax2.plot(supervisor_calls, label='Supervisor Calls', color='orange')
-    ax2.axvline(x=sabotage_episode, color='red', linestyle='--')
-    ax2.set_title(f'Supervisor Activation Decay - {sabotage_type}')
-    ax2.set_xlabel('Episode')
-    ax2.set_ylabel('Number of LLM Queries')
-    ax2.legend()
+    ax2.plot(supervisor_calls, label='Supervisor Calls', color='orange', linewidth=1.5)
+    ax2.axvline(x=sabotage_episode, color='red', linestyle='--', linewidth=1.5)
+    ax2.axvline(x=eval_episode, color='green', linestyle=':', label='Evaluation Mode', linewidth=1.5)
+    
+    ax2.set_title('Supervisor Activation Decay', fontsize=14, fontweight='bold')
+    ax2.set_xlabel('Episode', fontsize=12)
+    ax2.set_ylabel('Number of LLM Queries', fontsize=12)
+    ax2.tick_params(axis='both', labelsize=11)
+    
+    ax2.grid(True, linestyle='--', alpha=0.6) # Adds the grid
+    ax2.xaxis.set_major_locator(MaxNLocator(integer=True, nbins=8)) # Cleans up X-axis ticks
+    ax2.yaxis.set_major_locator(MaxNLocator(integer=True)) # Keeps Y-axis whole numbers
+    ax2.legend(fontsize=11)
     
     plt.tight_layout()
-    filename = f'hpd_results_{sabotage_type}.png'
-    plt.savefig(filename)
+    filename = f'hpd_results_{sabotage_type}_paper.png'
+    plt.savefig(filename, dpi=300, bbox_inches='tight') # bbox_inches strips extra white space
     print(f"\n>>> Results saved to '{filename}'")
+    plt.show()
 
-def run_hpd_experiment(sabotage_type='inverted_controls'):
+#  Main Single-Sabotage Experiment (Inverted Controls)
+def run_paper_experiment():
     # --- 1. Initialization ---
     env = SabotagedCartPole(render_mode=None) 
     state_dim = env.observation_space.shape[0]
@@ -40,13 +59,14 @@ def run_hpd_experiment(sabotage_type='inverted_controls'):
     # --- 2. Experiment Parameters ---
     num_episodes = 150
     sabotage_episode = 75       
-    stability_threshold = 1.0
+    eval_episode = 125          # Point of strict independence testing
+    sabotage_type = 'inverted_controls'
     
-    # --- Metrics Tracking ---
+    stability_threshold = 1.0
     episode_rewards = []
     supervisor_calls_history = []
     
-    print(f"\nStarting HPD Experimental Protocol: {sabotage_type.upper()}...")
+    print(f"\nStarting HPD Paper Protocol: {sabotage_type.upper()}...")
     
     # --- 3. The Reactive Learning Loop ---
     for episode in range(num_episodes):
@@ -55,23 +75,37 @@ def run_hpd_experiment(sabotage_type='inverted_controls'):
         truncated = False
         total_reward = 0
         supervisor_calls_this_episode = 0
+        active_context = env.sabotage_type
         
         # Phase 2: Trigger Sabotage Protocol dynamically
         if episode == sabotage_episode:
             print(f"\n{'='*50}\nEPISODE {episode}: INITIATING SABOTAGE PROTOCOL ({sabotage_type})\n{'='*50}")
             env.trigger_sabotage(sabotage_type=sabotage_type)
+            active_context = sabotage_type
             
-            # UNIVERSAL RECOVERY PROTOCOL (Thesis Aligned)
-            # 1. Flush all prior assumptions about environment dynamics
+            # UNIVERSAL RECOVERY PROTOCOL (Amnesia)
             worker.memory.clear()
             worker.td_error_history.clear() 
             worker.expert_memory.clear() 
             print(">>> All Knowledge Buffers Flushed.")
             
-            # 2. Universal Epsilon Reset to force OOD exploration
             worker.epsilon = 1.0 
             print(">>> Epsilon Reset to 1.0 for unbiased exploration.")
 
+        # Phase 3: Evaluation Mode (Proving Knowledge Retention)
+        if episode == eval_episode:
+            print(f"\n{'='*50}\nEPISODE {episode}: ENTERING EVALUATION MODE\n{'='*50}")
+            # Re-anchor the network to the expert vault before testing
+            #worker.vault_warm_up(context=active_context, steps=150)
+            
+            # Override epsilon_min so it actually hits zero
+            worker.epsilon = 0.0
+            worker.epsilon_min = 0.0 
+            
+            stability_threshold = 3.0
+            print(">>> Epsilon=0.0 (Exploitation), Threshold=3.0 (Strict Independence)")
+
+        # Agent Execution Loop
         while not (done or truncated):
             action = worker.select_action(state)
             next_state, reward, done, truncated, info = env.step(action)
@@ -80,13 +114,17 @@ def run_hpd_experiment(sabotage_type='inverted_controls'):
             td_error = worker.calculate_td_error(state, action, reward, next_state, done)
             
             if td_error > stability_threshold and info.get('sabotage_active'):
-                expert_action = supervisor.get_expert_action(state, info.get('sabotage_type'))
+                expert_action = supervisor.get_expert_action(state, active_context)
                 supervisor_calls_this_episode += 1
-                worker.distill_policy(state, expert_action)
+                worker.distill_policy(state, expert_action, context=active_context)
                 action = expert_action 
             
             worker.memory.push(state, action, reward, next_state, done)
-            worker.train_step()
+            
+            #Freeze the network during Evaluation Mode 
+            if episode < eval_episode:
+                worker.train_step(active_context=active_context)
+                
             state = next_state
             
         if episode % 10 == 0:
@@ -100,14 +138,8 @@ def run_hpd_experiment(sabotage_type='inverted_controls'):
 
     env.close()
     
-    # --- 4. Evaluation ---
-    plot_metrics(episode_rewards, supervisor_calls_history, sabotage_episode, sabotage_type)
+    # --- 4. Plot Generation ---
+    plot_metrics(episode_rewards, supervisor_calls_history, sabotage_episode, eval_episode, sabotage_type)
 
 if __name__ == "__main__":
-    # You can now easily comment out or run multiple experiments back-to-back!
-    
-    # Experiment 1
-    run_hpd_experiment(sabotage_type='inverted_controls')
-    
-    # Experiment 2
-    #run_hpd_experiment(sabotage_type='high_gravity')
+    run_paper_experiment()

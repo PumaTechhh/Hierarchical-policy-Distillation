@@ -69,7 +69,7 @@ class SabotagedCartPole(gym.Wrapper):
 
         print(">> SABOTAGE RESET: Environment restored to Nominal Operation ")
 
-# --- Quick Test Code (If running this file directly) ---
+# Quick Test Code
 if __name__ == "__main__":
     # Create the environment
     env = SabotagedCartPole(render_mode="human")
