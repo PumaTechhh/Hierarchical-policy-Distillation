@@ -102,9 +102,7 @@ The framework demonstrates an alternative to conventional retraining approaches 
 
 ## Authors
 
-Atharva Digamber Katurde - Munster Technological University
-
-Dr Ruairi O’Reilly - Munster Technological University
+XXX
 
 ---
 
