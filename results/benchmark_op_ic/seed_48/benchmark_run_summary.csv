@@ -1,0 +1,3 @@
+seed,agent,env,num_episodes,sabotage_episode,eval_episode,sabotage_type,total_reward_sum,mean_reward,mean_llm_calls,ttr_episodes,recovery_threshold,sustain_episodes
+48,vanilla,cartpole,150,75,125,inverted_controls,28079.0,187.19333333333333,0.0,13,150.0,4
+48,hpd,cartpole,150,75,125,inverted_controls,20922.0,139.48,0.32,24,150.0,4

@@ -1,4 +1,5 @@
 gymnasium[classic_control]
+gymnasium[box2d]
 numpy
 torch
 matplotlib

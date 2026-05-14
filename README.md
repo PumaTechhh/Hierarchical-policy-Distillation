@@ -1,113 +1,153 @@
-
 # Generative AI for Resilient Decision Support: A Hierarchical Policy Distillation Framework
 
-This repository contains the implementation accompanying the research work titled *“Generative AI for Resilient Decision Support: A Hierarchical Policy Distillation Framework.”*
+This repository contains the implementation accompanying the MSc thesis *"Generative AI for Resilient Decision Support: A Hierarchical Policy Distillation Framework"* (MTU Cork, 2025).
 
-The proposed framework introduces a hierarchical Supervisor–Worker architecture that integrates a reinforcement learning agent with a generative model to improve robustness under dynamic and previously unseen environmental conditions. The primary objective is to address performance degradation caused by out-of-distribution (OOD) shifts and to reduce the effects of catastrophic forgetting.
+The framework introduces a hierarchical **Supervisor–Worker** architecture that combines a lightweight DQN agent with a locally-hosted LLM to recover from out-of-distribution (OOD) perturbations without retraining from scratch.
 
 ---
 
-## Overview
+## How It Works
 
-The system consists of two main components:
+| Component | Role |
+|-----------|------|
+| **Worker (DQN)** | Interacts with the environment; learns control policies via Q-learning |
+| **Supervisor (Qwen2.5:7b via Ollama)** | Dormant during nominal operation; activated on OOD detection to provide expert actions |
+| **Failure Detection** | TD-error proxy + state-drift threshold triggers the Supervisor |
+| **Policy Distillation** | Supervisor guidance is distilled into the Worker via Behavioural Cloning loss blended with Q-learning |
 
-* **Worker Agent** : A Deep Q-Network (DQN)-based reinforcement learning agent responsible for interacting with the environment and learning control policies.
-* **Supervisor Module** : A generative model interface that provides high-level guidance when the agent exhibits signs of failure or instability.
-
-A failure detection mechanism based on temporal-difference (TD) error is used to identify brittle behaviour. Upon detection, the Supervisor module is invoked to generate corrective guidance, enabling recovery without retraining from scratch.
+Recovery is achieved through three mechanisms: **Amnesia Protocol** (replay buffer flush at perturbation onset), **Context-Routed Expert Vaults** (isolated memory per sabotage type), and **Gradient Blending** (λ=5.0 BC loss weight).
 
 ---
 
 ## Repository Structure
 
-<pre class="overflow-visible! px-0!" data-start="1585" data-end="1945"><div class="relative w-full mt-4 mb-1"><div class=""><div class="relative"><div class="h-full min-h-0 min-w-0"><div class="h-full min-h-0 min-w-0"><div class="border border-token-border-light border-radius-3xl corner-superellipse/1.1 rounded-3xl"><div class="h-full w-full border-radius-3xl bg-token-bg-elevated-secondary corner-superellipse/1.1 overflow-clip rounded-3xl lxnfua_clipPathFallback"><div class="pointer-events-none absolute end-1.5 top-1 z-2 md:end-2 md:top-1"></div><div class="w-full overflow-x-hidden overflow-y-auto pe-11 pt-3"><div class="relative z-0 flex max-w-full"><div id="code-block-viewer" dir="ltr" class="q9tKkq_viewer cm-editor z-10 light:cm-light dark:cm-light flex h-full w-full flex-col items-stretch ͼk ͼy"><div class="cm-scroller"><div class="cm-content q9tKkq_readonly"><span>HPD-Framework/</span><br/><span>│── main.py                # Entry point for running experiments</span><br/><span>│── requirements.txt       # List of dependencies</span><br/><span>│</span><br/><span>└── src/</span><br/><span>    ├── environment.py     # Custom environment with perturbation logic</span><br/><span>    ├── worker.py          # Reinforcement learning agent implementation</span><br/><span>    └── supervisor.py      # Supervisor module and model interface</span></div></div></div></div></div></div></div></div></div><div class=""><div class=""></div></div></div></div></div></pre>
+```
+HPD/
+├── main.py                    # Single-run experiment entry point
+├── requirements.txt
+│
+├── src/
+│   ├── environment.py         # SabotagedCartPole / SabotagedLunarLander wrappers
+│   ├── worker.py              # DQNWorker: Q-network, distill_policy, gradient blending
+│   └── supervisor.py          # LocalLLaMASupervisor: vector-to-text bridge, Ollama client
+│
+├── scripts/
+│   ├── benchmark_runner.py    # Multi-seed HPD vs Vanilla benchmarking with CSV export
+│   ├── plot_benchmarks.py     # Reward curve plots from CSV
+│   ├── generate_final_plots.py       # Thesis Figures 5.1–5.3, 5.6
+│   ├── generate_thesis_figures.py    # Combined reward + supervisor call figures
+│   ├── generate_thesis_plots.py      # Coloured per-phase thesis plots
+│   └── generate_ttr_chart.py         # Time-to-Recovery bar chart
+│
+├── results/
+│   ├── benchmark_op_ic/       # Inverted Controls: 10-seed CSVs + combined figure
+│   └── benchmark_op_si/       # Sensor Inversion: 10-seed CSVs + combined figure
+│
+└── figures/
+    ├── recovery_rate_summary.png         # Figure 5.1
+    ├── ttr_comparison_both_conditions.png # Figure 5.2
+    ├── phase_reward_comparison.png        # Figure 5.3
+    ├── ttr_comparison.png                 # Figure 5.4 (IC)
+    └── supervisor_activation_decay.png    # Figure 5.6
+```
 
 ---
 
 ## Prerequisites
 
-This framework requires access to a locally hosted generative model.
+Requires a locally hosted LLM via [Ollama](https://ollama.com/).
 
-1. Install Ollama from: [https://ollama.com/](https://ollama.com/)
-2. Download the required model:
+```bash
+# Install Ollama, then pull the model
+ollama pull qwen2.5:7b
 
-`ollama run llama3.2`
-
-Ensure that the Ollama service is running in the background before executing the code.
+# Keep the Ollama service running before executing any scripts
+```
 
 ---
 
 ## Installation
 
-Clone the repository:
+```bash
+git clone https://github.com/PumaTechhh/HPD.git
+cd HPD
 
-`git clone https://github.com/YourUsername/HPD-Framework.git cd HPD-Framework`
+python -m venv venv
+# Windows:
+venv\Scripts\activate
+# macOS/Linux:
+source venv/bin/activate
 
-Create and activate a virtual environment (recommended):
-
-`python -m venv venv `
-
-`source venv/bin/activate        # On Windows: venv\Scripts\activate`
-
-Install dependencies:
-`pip install -r requirements.txt`
-
----
-
-## Running the Experiment
-
-To execute the primary experiment:
-
-`python main.py`
+pip install -r requirements.txt
+```
 
 ---
 
 ## Experimental Protocol
 
-The evaluation is conducted over three phases:
+Experiments run over **150 episodes** across three phases:
 
-**Phase 1 (Episodes 0–74): Baseline Learning**
+| Phase | Episodes | Description |
+|-------|----------|-------------|
+| **1 — Nominal** | 0–74 | Agent learns the standard task; Supervisor dormant |
+| **2 — Recovery** | 75–124 | OOD perturbation injected; Supervisor activated on failure detection |
+| **3 — Evaluation** | 125–149 | Exploration off; agent evaluated under perturbed conditions |
 
-The agent learns the standard control task in a stable environment. The Supervisor module remains inactive.
+Two sabotage conditions are tested:
 
-**Phase 2 (Episodes 75–124): Environmental Perturbation**
-
-The environment is modified without prior notification (for example, inverted control dynamics). This results in a decline in agent performance. The failure detection mechanism activates the Supervisor module, which provides corrective guidance.
-
-**Phase 3 (Episodes 125–150): Evaluation**
-
-Exploration is disabled and learning stabilises. The agent’s performance is evaluated under the modified conditions.
-
----
-
-## Output
-
-Upon completion, the framework generates a result file:
-
-`hpd_results.png`
-
-The output visualises:
-
-* Performance degradation following environmental change
-* Recovery behaviour over time
-* Supervisor activation patterns
+- `inverted_controls` — action polarity reversed
+- `sensor_inversion`  — observation sign flipped
 
 ---
 
-## Methodological Contribution
+## Running
 
-The framework demonstrates an alternative to conventional retraining approaches by incorporating a generative reasoning layer. Instead of relying solely on accumulated experience, the system adapts by integrating externally generated guidance, improving recovery speed and maintaining previously learned behaviours.
+**Single run (quick experiment):**
+
+```bash
+python main.py
+```
+
+**Multi-seed benchmark (HPD vs Vanilla DQN):**
+
+```bash
+# Run from the project root
+python scripts/benchmark_runner.py \
+    --seeds 42 43 44 45 46 47 48 49 50 51 \
+    --agents vanilla hpd \
+    --sabotage-types inverted_controls sensor_inversion \
+    --num-episodes 150 \
+    --output-dir benchmark_outputs
+```
+
+Outputs per seed: `benchmark_episode_metrics.csv`, `benchmark_run_summary.csv`  
+Combined: `ALL_SEEDS_combined_metrics.csv`, `ALL_SEEDS_combined_summary.csv`
+
+**Regenerate thesis figures from existing CSVs:**
+
+```bash
+python scripts/generate_final_plots.py
+python scripts/generate_thesis_figures.py
+python scripts/generate_ttr_chart.py \
+    --summary-csvs results/benchmark_op_ic/ALL_SEEDS_combined_summary.csv \
+                   results/benchmark_op_si/ALL_SEEDS_combined_summary.csv \
+    --output figures/ttr_comparison
+```
 
 ---
 
-## Authors
+## Results
 
-XXX
+All benchmark data (10 seeds × 2 conditions) is in [results/](results/). Key metrics:
+
+- **Time-to-Recovery (TTR)**: episodes from perturbation onset until reward exceeds threshold for 4 consecutive episodes
+- **Recovery Rate**: fraction of seeds that achieved sustained recovery within the benchmark window
+- **Mean Phase Reward**: average reward across Phase 3 evaluation episodes
 
 ---
 
 ## Notes
 
-* The implementation is intended for research and experimental purposes.
-* The framework can be extended to other environments and domains with minimal modification.
-* Alternative generative models may be integrated by modifying the Supervisor module.
+- All `scripts/` must be run from the **project root** (not from inside `scripts/`)
+- The Supervisor is invoked at most once per episode during Phase 2; subsequent OOD steps use a fast heuristic fallback
+- The framework is environment-agnostic; extend by subclassing the wrappers in `src/environment.py`

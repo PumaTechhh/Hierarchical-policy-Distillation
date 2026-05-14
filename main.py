@@ -54,7 +54,7 @@ def run_paper_experiment():
     action_dim = env.action_space.n
     
     worker = DQNWorker(state_dim, action_dim)
-    supervisor = LocalLLaMASupervisor(model_name="llama3.2")
+    supervisor = LocalLLaMASupervisor(model_name="qwen3:8b")
     
     # --- 2. Experiment Parameters ---
     num_episodes = 150
@@ -89,8 +89,8 @@ def run_paper_experiment():
             worker.expert_memory.clear() 
             print(">>> All Knowledge Buffers Flushed.")
             
-            worker.epsilon = 1.0 
-            print(">>> Epsilon Reset to 1.0 for unbiased exploration.")
+            worker.epsilon = 1.0
+            print(">>> Epsilon reset to 1.0 for full re-exploration after OOD shift.")
 
         # Phase 3: Evaluation Mode (Proving Knowledge Retention)
         if episode == eval_episode:
@@ -106,8 +106,15 @@ def run_paper_experiment():
             print(">>> Epsilon=0.0 (Exploitation), Threshold=3.0 (Strict Independence)")
 
         # Agent Execution Loop
+        lock_counter = 0
+        last_expert_action = None
+
         while not (done or truncated):
-            action = worker.select_action(state)
+            if lock_counter > 0 and last_expert_action is not None:
+                action = last_expert_action
+                lock_counter -= 1
+            else:
+                action = worker.select_action(state)
             next_state, reward, done, truncated, info = env.step(action)
             total_reward += reward
             
@@ -115,9 +122,13 @@ def run_paper_experiment():
             
             if td_error > stability_threshold and info.get('sabotage_active'):
                 expert_action = supervisor.get_expert_action(state, active_context)
-                supervisor_calls_this_episode += 1
-                worker.distill_policy(state, expert_action, context=active_context)
-                action = expert_action 
+                if supervisor.last_call_used_llm:
+                    supervisor_calls_this_episode += 1
+
+                for _ in range(4):
+                    worker.distill_policy(state, expert_action, context=active_context)
+                last_expert_action = expert_action
+                lock_counter = 12
             
             worker.memory.push(state, action, reward, next_state, done)
             

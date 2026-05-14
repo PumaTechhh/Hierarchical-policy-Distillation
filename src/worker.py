@@ -241,7 +241,7 @@ class DQNWorker:
                 exp_actions_t = torch.LongTensor(exp_actions).to(self.device)
 
                 bc_loss    = self.bc_loss(self.policy_net(exp_states_t), exp_actions_t)
-                total_loss = rl_loss + 1.0 * bc_loss
+                total_loss = rl_loss + 5.0 * bc_loss
 
         self.optimizer.zero_grad()
         total_loss.backward()
