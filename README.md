@@ -102,7 +102,8 @@ The framework demonstrates an alternative to conventional retraining approaches 
 
 ## Authors
 
-XXX
+Atharva Katurde
+Dr. Ruairi O'Reilly
 
 ---
 
